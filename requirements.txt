@@ -1,5 +1,4 @@
 discord.py
+PyNaCl
 yt-dlp
 python-dotenv
-PyNaCl
-requests
