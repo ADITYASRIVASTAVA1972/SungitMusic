@@ -1,38 +1,46 @@
+import os
+import asyncio
+from dotenv import load_dotenv
+
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
 import yt_dlp
-import asyncio
 
-# ================= CONFIG =================
-import os
+# ============ LOAD ENV ============
+load_dotenv()
 TOKEN = os.getenv("TOKEN")
-PREFIX = "-"
-# ==========================================
 
+PREFIX = "-"
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-queues = {}
-stay_247 = False
-
+# ============ YTDL ============
 ytdl = yt_dlp.YoutubeDL({
-    "format": "bestaudio",
+    "format": "bestaudio/best",
     "quiet": True
 })
 
+# ============ GLOBALS ============
+queues = {}
+stay_247 = False
 
-# ================= EVENTS =================
+FFMPEG_OPTIONS = {
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn"
+}
+
+
+# ============ READY ============
 @bot.event
 async def on_ready():
     print("=================================")
     print(f"✅ Logged in as {bot.user}")
-    print(f"🆔 Bot ID: {bot.user.id}")
-    print("🎵 Sungit Music Bot is READY")
+    print("🎵 Sungit Music Bot READY")
     print("=================================")
 
 
-# ================= UTILS =================
+# ============ UTIL ============
 def get_stream(query):
     info = ytdl.extract_info(f"ytsearch:{query}", download=False)["entries"][0]
     return info["url"], info["title"]
@@ -42,7 +50,7 @@ async def play_next(ctx):
     if queues.get(ctx.guild.id):
         url, title = queues[ctx.guild.id].pop(0)
 
-        source = discord.FFmpegPCMAudio(url, options="-vn")
+        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
         ctx.voice_client.play(
             source,
             after=lambda e: asyncio.run_coroutine_threadsafe(
@@ -64,7 +72,7 @@ async def play_next(ctx):
                 await ctx.voice_client.disconnect()
 
 
-# ================= BUTTONS =================
+# ============ BUTTONS ============
 class Controls(View):
     def __init__(self, ctx):
         super().__init__(timeout=None)
@@ -91,14 +99,14 @@ class Controls(View):
         await interaction.response.send_message("⏹ Stopped & Left VC", ephemeral=True)
 
 
-# ================= COMMANDS =================
+# ============ COMMANDS ============
 @bot.command()
 async def join(ctx):
     if not ctx.author.voice:
-        return await ctx.send("❌ You need to be in VC first")
+        return await ctx.send("❌ Join VC first")
 
     if ctx.voice_client:
-        return await ctx.send("✅ Already connected")
+        return await ctx.send("✅ Already in VC")
 
     await ctx.author.voice.channel.connect()
     await ctx.send(f"✅ Joined **{ctx.author.voice.channel.name}**")
@@ -113,13 +121,22 @@ async def play(ctx, *, song: str):
         await ctx.invoke(join)
 
     url, title = get_stream(song)
-
     queues.setdefault(ctx.guild.id, []).append((url, title))
 
     if ctx.voice_client.is_playing():
         return await ctx.send(f"➕ Added to queue: **{title}**")
 
     await play_next(ctx)
+
+
+@bot.command()
+async def queue(ctx):
+    q = queues.get(ctx.guild.id)
+    if not q:
+        return await ctx.send("📭 Queue empty")
+
+    msg = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(q)])
+    await ctx.send(f"🎵 **Queue:**\n{msg}")
 
 
 @bot.command()
@@ -130,24 +147,8 @@ async def skip(ctx):
 
 @bot.command()
 async def stop(ctx):
-    ctx.voice_client.pause()
-    await ctx.send("⏸ Paused")
-
-
-@bot.command()
-async def left(ctx):
     await ctx.voice_client.disconnect()
     await ctx.send("👋 Left VC")
-
-
-@bot.command(aliases=["q"])
-async def queue(ctx):
-    q = queues.get(ctx.guild.id)
-    if not q:
-        return await ctx.send("📭 Queue is empty")
-
-    msg = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(q)])
-    await ctx.send(f"🎵 **Queue:**\n{msg}")
 
 
 @bot.command(name="247")
@@ -157,5 +158,5 @@ async def stay(ctx):
     await ctx.send(f"🔁 24/7 Mode: {'ON' if stay_247 else 'OFF'}")
 
 
-# ================= START =================
+# ============ START ============
 bot.run(TOKEN)
