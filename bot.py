@@ -5,7 +5,8 @@ import yt_dlp
 import asyncio
 
 # ================= CONFIG =================
-TOKEN = "MTQ2OTIxMTczNTYwODI2NjkzNA.GtK_On.dIPFHWBHC-JN0wG1y6h55Xbj_D4uJs9YcM31d0"
+import os
+TOKEN = os.getenv("TOKEN")
 PREFIX = "-"
 # ==========================================
 
