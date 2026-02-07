@@ -1,162 +1,140 @@
-import os
-import asyncio
-from dotenv import load_dotenv
-
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
+from discord import FFmpegPCMAudio
+import asyncio
 import yt_dlp
 
-# ============ LOAD ENV ============
-load_dotenv()
-TOKEN = os.getenv("TOKEN")
-
-PREFIX = "-"
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot = commands.Bot(command_prefix='-', intents=intents)
 
-# ============ YTDL ============
-ytdl = yt_dlp.YoutubeDL({
-    "format": "bestaudio/best",
-    "quiet": True
-})
+# Queue dictionary per guild
+guild_queues = {}
 
-# ============ GLOBALS ============
-queues = {}
-stay_247 = False
-
+# FFmpeg options
 FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn"
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn'
 }
 
+# YT-DLP options
+YDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'noplaylist': True,
+    'quiet': True
+}
 
-# ============ READY ============
 @bot.event
 async def on_ready():
-    print("=================================")
     print(f"✅ Logged in as {bot.user}")
-    print("🎵 Sungit Music Bot READY")
-    print("=================================")
+    print("🎵 Music Bot is READY")
 
-
-# ============ UTIL ============
-def get_stream(query):
-    info = ytdl.extract_info(f"ytsearch:{query}", download=False)["entries"][0]
-    return info["url"], info["title"]
-
-
-async def play_next(ctx):
-    if queues.get(ctx.guild.id):
-        url, title = queues[ctx.guild.id].pop(0)
-
-        source = discord.FFmpegPCMAudio(url, **FFMPEG_OPTIONS)
-        ctx.voice_client.play(
-            source,
-            after=lambda e: asyncio.run_coroutine_threadsafe(
-                play_next(ctx), bot.loop
-            )
-        )
-
-        embed = discord.Embed(
-            title="🎶 Now Playing",
-            description=title,
-            color=discord.Color.blurple()
-        )
-        await ctx.send(embed=embed, view=Controls(ctx))
-
-    else:
-        if not stay_247:
-            await asyncio.sleep(20)
-            if ctx.voice_client and not ctx.voice_client.is_playing():
-                await ctx.voice_client.disconnect()
-
-
-# ============ BUTTONS ============
-class Controls(View):
-    def __init__(self, ctx):
-        super().__init__(timeout=None)
-        self.ctx = ctx
-
-    @discord.ui.button(label="⏯", style=discord.ButtonStyle.primary)
-    async def pause(self, interaction: discord.Interaction, button: Button):
-        vc = self.ctx.voice_client
-        if vc.is_playing():
-            vc.pause()
-            await interaction.response.send_message("⏸ Paused", ephemeral=True)
-        else:
-            vc.resume()
-            await interaction.response.send_message("▶ Resumed", ephemeral=True)
-
-    @discord.ui.button(label="⏭", style=discord.ButtonStyle.secondary)
-    async def skip(self, interaction: discord.Interaction, button: Button):
-        self.ctx.voice_client.stop()
-        await interaction.response.send_message("⏭ Skipped", ephemeral=True)
-
-    @discord.ui.button(label="⏹", style=discord.ButtonStyle.danger)
-    async def stop(self, interaction: discord.Interaction, button: Button):
-        await self.ctx.voice_client.disconnect()
-        await interaction.response.send_message("⏹ Stopped & Left VC", ephemeral=True)
-
-
-# ============ COMMANDS ============
+# Join command
 @bot.command()
 async def join(ctx):
-    if not ctx.author.voice:
-        return await ctx.send("❌ Join VC first")
+    if ctx.author.voice:
+        channel = ctx.author.voice.channel
+        if ctx.voice_client is None:
+            await channel.connect()
+            await ctx.send(f"✅ Joined **{channel}**")
+        else:
+            await ctx.voice_client.move_to(channel)
+            await ctx.send(f"✅ Moved to **{channel}**")
+    else:
+        await ctx.send("❌ You are not in a voice channel!")
 
-    if ctx.voice_client:
-        return await ctx.send("✅ Already in VC")
-
-    await ctx.author.voice.channel.connect()
-    await ctx.send(f"✅ Joined **{ctx.author.voice.channel.name}**")
-
-
-@bot.command(aliases=["p"])
-async def play(ctx, *, song: str):
-    if not ctx.author.voice:
-        return await ctx.send("❌ Join VC first")
-
-    if not ctx.voice_client:
-        await ctx.invoke(join)
-
-    url, title = get_stream(song)
-    queues.setdefault(ctx.guild.id, []).append((url, title))
-
-    if ctx.voice_client.is_playing():
-        return await ctx.send(f"➕ Added to queue: **{title}**")
-
-    await play_next(ctx)
-
-
+# Play command
 @bot.command()
-async def queue(ctx):
-    q = queues.get(ctx.guild.id)
-    if not q:
-        return await ctx.send("📭 Queue empty")
+async def play(ctx, *, url):
+    if ctx.voice_client is None:
+        await join(ctx)
 
-    msg = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(q)])
-    await ctx.send(f"🎵 **Queue:**\n{msg}")
+    guild_id = ctx.guild.id
+    if guild_id not in guild_queues:
+        guild_queues[guild_id] = []
 
+    guild_queues[guild_id].append(url)
 
+    # If not already playing, start the queue
+    if not ctx.voice_client.is_playing():
+        await play_next(ctx)
+
+async def play_next(ctx):
+    guild_id = ctx.guild.id
+    if len(guild_queues[guild_id]) == 0:
+        await ctx.voice_client.disconnect()
+        return
+
+    url = guild_queues[guild_id][0]
+
+    with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+        info = ydl.extract_info(url, download=False)
+        audio_url = info['url']
+
+    source = FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+    ctx.voice_client.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(after_song(ctx), bot.loop))
+
+async def after_song(ctx):
+    guild_id = ctx.guild.id
+    guild_queues[guild_id].pop(0)
+    if len(guild_queues[guild_id]) > 0:
+        await play_next(ctx)
+
+# Skip command
 @bot.command()
 async def skip(ctx):
-    ctx.voice_client.stop()
-    await ctx.send("⏭ Skipped")
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        await ctx.send("⏭ Skipped!")
+    else:
+        await ctx.send("❌ Nothing is playing!")
 
-
+# Stop command
 @bot.command()
 async def stop(ctx):
-    await ctx.voice_client.disconnect()
-    await ctx.send("👋 Left VC")
+    guild_id = ctx.guild.id
+    if ctx.voice_client:
+        ctx.voice_client.stop()
+        guild_queues[guild_id] = []
+        await ctx.send("⏹ Stopped and cleared the queue!")
+    else:
+        await ctx.send("❌ Nothing is playing!")
 
+# Pause command
+@bot.command()
+async def pause(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.pause()
+        await ctx.send("⏸ Paused!")
+    else:
+        await ctx.send("❌ Nothing is playing!")
 
-@bot.command(name="247")
-async def stay(ctx):
-    global stay_247
-    stay_247 = not stay_247
-    await ctx.send(f"🔁 24/7 Mode: {'ON' if stay_247 else 'OFF'}")
+# Resume command
+@bot.command()
+async def resume(ctx):
+    if ctx.voice_client and ctx.voice_client.is_paused():
+        ctx.voice_client.resume()
+        await ctx.send("▶ Resumed!")
+    else:
+        await ctx.send("❌ Nothing is paused!")
 
+# Queue command
+@bot.command()
+async def queue(ctx):
+    guild_id = ctx.guild.id
+    if guild_id in guild_queues and len(guild_queues[guild_id]) > 0:
+        msg = "**Queue:**\n"
+        for i, song in enumerate(guild_queues[guild_id], start=1):
+            msg += f"{i}. {song}\n"
+        await ctx.send(msg)
+    else:
+        await ctx.send("❌ Queue is empty!")
 
-# ============ START ============
-bot.run(TOKEN)
+# Now Playing
+@bot.command()
+async def np(ctx):
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        await ctx.send(f"▶ Now Playing: {guild_queues[ctx.guild.id][0]}")
+    else:
+        await ctx.send("❌ Nothing is playing!")
+
+bot.run("YOUR_BOT_TOKEN")
